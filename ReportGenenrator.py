@@ -1,61 +1,104 @@
+#  Working envrionment: Python 2.7
+import re
 from openpyxl import load_workbook
 from openpyxl.styles import colors,PatternFill
+from pdfminer.pdfparser import PDFParser
+from pdfminer.pdfdocument import PDFDocument
+from pdfminer.pdftypes import resolve1
+from pdfminer.psparser import PSLiteral, literal_name
+style = PatternFill(fill_type='solid',fgColor=colors.RED)
 
-#  format the checklist: all logic signal inside [ICS Configuration] shall be lower case, otherwise shall be upper case
-def format_and_or(string):
-    output = string.lower()
-    str_or = output.split(' or ')
-    for i in str_or:
-        if str_or[-1] != i:
-            if i.rfind(']') > i.rfind('['):
-                str_or[str_or.index(i)] += ' OR '
-            else:
-                str_or[str_or.index(i)] += ' or '
-    output = ''.join(str_or)
-    str_and = output.split(' and ')
-    for i in str_and:
-        if str_and[-1] != i:
-            if i.rfind(']') > i.rfind('['):
-                str_and[str_and.index(i)] += ' AND '
-            else:
-                str_and[str_and.index(i)] += ' and '
-    output = ''.join(str_and)
-    return output
 
-#  format the checklist: parenthesis
-def format_parenthesis(string):
-    return False if string.count('[') != string.count(']') or string.count('(') != string.count(')') else True
+
+logic_texts = ['and', 'or']
+verdict_texts = ['supported', 'not supported', 'present', 'not present or not active', 'disabled or not supported']
+
+
+#  extract data from pdf-acroform fields
+def load_fields_from_pdf(field, T=''):
+    #  Recursively load form fields
+    form = field.get('Kids', None)
+    t = field.get('T')
+    if t is None:
+        t = T
+    else:
+        #  Add its father name
+        t = T + '.' + t if T != '' else t
+    if form and t:
+        return [load_fields_from_pdf(resolve1(f), t) for f in form]
+    else:
+        # Some field types, like signatures, need extra resolving
+        value = resolve1(field.get('AS')) if resolve1(field.get('AS')) is not None else resolve1(field.get('V'))
+        #  if output is PSLiteral type, transfer it into str type through "literal_name" function
+        if isinstance(value, PSLiteral):
+            return (t, literal_name(value))
+        else:
+            return (t, resolve1(value))
+
+#  split data into dictionary
+def split_data(field, d={}):
+    flag = True if len(field) != 2 else False
+    if flag:
+        for f in field:
+            split_data(f, d)
+    elif isinstance(field[0], (tuple, list)):
+        for f in field:
+            split_data(f, d)
+    else:
+        key = field[0] if field[0] is not None else field[0]
+        d[key] = field[1]
+    return d
+
+#  load ICS data from decrypted pdf docutment
+def load_data_from_pdf(pdf):
+    with open(pdf, 'rb') as file:
+        parser = PDFParser(file)
+        doc = PDFDocument(parser)
+        parser.set_document(doc)
+        outcome = [load_fields_from_pdf(resolve1(f)) for f in resolve1(doc.catalog['AcroForm'])['Fields']]
+        return split_data(outcome)
+
+# multiple replace
+def multi_replace(str, arg1, arg2, *args):
+    str = str.replace(arg1, arg2)
+    for arg in args:
+        str = str.replace(arg, arg2)
+    return str
+
 
 #  get all non-repetitive [ICS Configuration] from checklist
 def define_ics_configuration():
     list = []
     try:
-        checklist = load_workbook('qVSDC_MSD_Reader_Checklist_v2.1.3c_Mar.xlsx')
+        checklist = load_workbook('template_RGpath.xlsx')
     except IOError as e:
         raw_input(e)
         exit()
     for checklist_sheet in [checklist['MSD Path(Online Only)'], checklist['MSD Path(Online Capable)'], checklist['qVSDC Path']]:
         for cell in checklist_sheet['B']:
-            string = cell.value
-            if string not in ['NA', 'Test deleted', None]:
-                if format_parenthesis(string) == False:
-                    raw_input('Please modify the parenthesis in this row correctly:' + str(cell.row))
-                string = string.replace('\n', ' ')
-                string = format_and_or(string)
+            condition = cell.value
+            # if format_parenthesis(condition) == False:
+            #     raw_input('Please modify the parenthesis in this row correctly:' + str(cell.row))
+            if condition is not None:
+                condition = condition.lower()
+                condition = multi_replace(condition, '\n', ' ', '  ')
+                condition = multi_replace(condition, '[', '', ']', '(', ')')
+                condition = condition.replace('disbaled', 'disabled')
+                condition = multi_replace(condition, ' disabled or not supported', ',', ' not supported', ' supported')
+                condition = condition.strip().strip(',').split(',')
                 # catch all configuration items
-                while string.find('[') != -1:
-                    key = string[string.find('['):(string.find(']') + 1)]
-                    string = string[(string.find(']') + 1):]
-                    if key.lower() not in list:
-                        list.append(key.lower())
-                        print key
+                for str in condition:
+                    key = str.strip()
+                    if key not in list:
+                        list.append(key)
+                        print key,cell
     checklist.close()
 
 #  fetch all [ICS Configuration] value from customer ics pdf document
 def get_ics_value():
     dic = {}
     try:
-        ics = load_workbook('checklist.xlsx')
+        ics = load_workbook('template_RGpath.xlsx')
     except IOError as e:
         raw_input(e)
         exit()
@@ -67,50 +110,107 @@ def get_ics_value():
     return dic
 
 
-def readdata(ics):
+def readdata(ics_result):
     try:
-        checklist = load_workbook('checklist.xlsx')
+        checklist = load_workbook('template_RGpath.xlsx')
     except IOError as e:
         raw_input(e)
         exit()
-    checklist_sheet = checklist['checklist']
-    for cell in checklist_sheet['B']:
-        string = cell.value
-        if string is not None and string.strip() not in ['NA', 'Test deleted']:
-            string = string.replace('\n', ' ')
-            string = format_and_or(string)
-
-            divide = string.replace('AND', ',').replace('OR', ',').replace('(', '').replace(')', '').lower()
-            divide = divide.replace(' not supported', 'n ').replace(' supported', 'y ').split(',')
-            divide = [item.strip() for item in divide]
-            for piece in divide:
-                if piece[-1] == ']':
-                    divide[divide.index(piece)] += 'y'
-                    piece += 'y'
-                if piece[piece.find(']') + 1] not in ['y', 'n']:
-                    addin = [p[-1] for p in divide[divide.index(piece):] if p[-2] in ['y', 'n']]
-                    if cell.row == 1058:
-                        print addin, piece
-                    divide[divide.index(piece)] += addin
-                    piece += addin
-                # #  check if all end with y or n
-                # if piece[-1] not in ['y', 'n']:
-                #     raw_input(piece)
-                for key in ics.keys():
-                    if piece[:(len(piece) -1)] == key:
-                        divide[divide.index(piece)] = ics[key] if piece[-1] == 'y' else not ics[key]
-            string = string.lower().replace(' not supported', '').replace(' supported', '')
-            for i in range(len(divide)):
-                if string.find('[') != -1:
-                    string = string.replace(string[string.find('['): string.find(']') + 1], str(divide[i])) + '\n'
-            checklist_sheet['C' + str(cell.row)] = 'PASS' if eval(string) == True else 'NA'
-        elif string is not None and string.strip() == 'NA':
-            checklist_sheet['C' + str(cell.row)] = 'PASS'
-    checklist.save('checklist_output.xlsx')
-    checklist.close()
+    temp_sheet = checklist['Sheet1'] # list all possible configurtion
+    for path_sheet in [checklist['MSD Path(Online Only)'], checklist['MSD Path(Online Capable)'], checklist['qVSDC Path']]:
+        for condition_cell in path_sheet['B']:
+            condition = condition_cell.value  # get condition description from template
+            outcome = ''  # contain logic method and verdict calculation the final result
+            if condition not in [None, 'CONDITIONS ']:
+                # format conditions
+                condition = condition.lower()
+                condition = multi_replace(condition, '\n', ' ', '   ', '  ')    # remove line break and make sure there's only one blank between words
+                condition = multi_replace(condition, '[', '', ']', '(', ')')    # remove all parentheses
+                condition = condition.replace('disbaled', 'disabled')         # fix TYPOs
+                # translate conditions
+                for item in temp_sheet['A']:
+                    if item.value and re.search(item.value, condition):
+                        if temp_sheet['B' + str(item.row)].value and re.search(r'.* and .*|.* or .*', temp_sheet['B' + str(item.row)].value):
+                            piece = temp_sheet['B' + str(item.row)].value.split(' and ')
+                            print piece
 
 
 
-define_ics_configuration()
+
+    #                     if re.search(item.value + r' (supported|not supported|present|not present or not active|disabled or not supported)', condition):
+    #                         modifier = re.search(item.value + r' (supported|not supported|present|not present or not active|disabled or not supported)', condition).group(0)
+    #                         modifier = modifier.replace(item.value, '').strip()
+    #                         pass
+    #                     else:
+    #                         condition = condition.replace(item.value, item.value + ' supported')
+    #                         modifier = 'supported'
+    #                     if re.search(item.value + r' (supported|not supported|present|not present or not active|disabled or not supported) (and|or)', condition):
+    #                         pass
+    #                     else:
+    #                         condition = re.sub(item.value + r' (supported|not supported|present|not present or not active|disabled or not supported)', r'\g<0> and', condition)
+    #                     if modifier == 'supported' or modifier == 'present':
+    #                         verdict = 'True' #
+    #                     elif modifier == 'not supported':
+    #                         verdict = 'False' #
+    #                     elif modifier == 'not present or not active' or modifier == 'disabled or not supported':
+    #                         condition = re.sub(item.value + r' (supported|not supported|present|not present or not active|disabled or not supported) (and|or)', '', condition)
+    #                         continue
+    #                     condition = re.sub(item.value + r' (supported|not supported|present|not present or not active|disabled or not supported)', verdict, condition)
+    #
+    #             condition = condition.strip()
+    #             condition = condition[0:-4]
+    #             condition = 'True' if not condition else eval(condition)
+    #             subcondition_area = [sub.column for sub in path_sheet[condition_cell.row] if path_sheet[str(sub.column) + '2'].value == 'Y or N/A']
+    #             result_area = [res.column for res in path_sheet[condition_cell.row] if path_sheet[str(res.column) + '2'].value == 'RESULT']
+    #             for index, subcondition in enumerate(subcondition_area):
+    #                 subcondition = True if path_sheet[subcondition + str(condition_cell.row)].value == 'Y' else False
+    #                 path_sheet[result_area[index] + str(condition_cell.row)].value = 'PASS' if subcondition and condition else 'N/A'
+    # checklist.save('checklist_output.xlsx')
+    # checklist.close()
+
+                        # condition = condition.replace(item.value.strip(), 'True')  # pending to add real result
+                        #
+                        # for verdict in verdict_texts:
+                        #     print re.match(verdict, condition.strip())
+                        #     print condition
+                        #     raw_input()
+
+                # if condition.strip():
+                #     print condition.strip(), cell
+
+                # divide = condition.replace('AND', ',').replace('OR', ',').replace('(', '').replace(')', '').lower()
+                # divide = divide.replace(' not supported', 'n ').replace(' supported', 'y ').split(',')
+                # divide = [item.strip() for item in divide]
+                # for piece in divide:
+                #     if piece[-1] == ']':
+                #         divide[divide.index(piece)] += 'y'
+                #         piece += 'y'
+                #     if piece[piece.find(']') + 1] not in ['y', 'n']:
+                #         addin = [p[-1] for p in divide[divide.index(piece):] if p[-2] in ['y', 'n']]
+                #         if cell.row == 1058:
+                #             print addin, piece
+                #         divide[divide.index(piece)] += addin
+                #         piece += addin
+                    # #  check if all end with y or n
+                    # if piece[-1] not in ['y', 'n']:
+                    #     raw_input(piece)
+    #                 for key in ics.keys():
+    #                     if piece[:(len(piece) -1)] == key:
+    #                         divide[divide.index(piece)] = ics[key] if piece[-1] == 'y' else not ics[key]
+    #             condition = condition.lower().replace(' not supported', '').replace(' supported', '')
+    #             for i in range(len(divide)):
+    #                 if condition.find('[') != -1:
+    #                     condition = condition.replace(condition[condition.find('['): condition.find(']') + 1], str(divide[i])) + '\n'
+    #             checklist_sheet['C' + str(cell.row)] = 'PASS' if eval(condition) == True else 'NA'
+    #         elif condition is not None and condition.strip() == 'NA':
+    #             checklist_sheet['C' + str(cell.row)] = 'PASS'
+    # checklist.save('checklist_output.xlsx')
+    # checklist.close()
+
+
+
+#define_ics_configuration()
 #ics = get_ics_value()
-#config = readdata(ics)
+#readdata()
+ics = load_data_from_pdf('out1.pdf')
+readdata(ics)
