@@ -14,6 +14,13 @@ logic_texts = ['and', 'or']
 verdict_texts = ['supported', 'not supported', 'present', 'not present or not active', 'disabled or not supported']
 
 
+# multiple replace
+def multi_replace(str, arg1, arg2, *args):
+    str = str.replace(arg1, arg2)
+    for arg in args:
+        str = str.replace(arg, arg2)
+    return str
+
 #  extract data from pdf-acroform fields
 def load_fields_from_pdf(field, T=''):
     #  Recursively load form fields
@@ -24,16 +31,21 @@ def load_fields_from_pdf(field, T=''):
     else:
         #  Add its father name
         t = T + '.' + t if T != '' else t
-    if form and t:
-        return [load_fields_from_pdf(resolve1(f), t) for f in form]
+    """ Following is to repeat fields that have "Kids", now is commented because 
+    1. There could be multiple fileds who shared the same field name.
+    2. For buttons, the parents has "V" value already, don't need to dig in Kids.
+    """
+    # if form and t:
+    #     return [load_fields_from_pdf(resolve1(f), t) for f in form]
+    # else:
+
+    # Some field types, like signatures, need extra resolving
+    value = resolve1(field.get('AS')) if resolve1(field.get('AS')) is not None else resolve1(field.get('V'))
+    #  if output is PSLiteral type, transfer it into str type through "literal_name" function
+    if isinstance(value, PSLiteral):
+        return (t, literal_name(value))
     else:
-        # Some field types, like signatures, need extra resolving
-        value = resolve1(field.get('AS')) if resolve1(field.get('AS')) is not None else resolve1(field.get('V'))
-        #  if output is PSLiteral type, transfer it into str type through "literal_name" function
-        if isinstance(value, PSLiteral):
-            return (t, literal_name(value))
-        else:
-            return (t, resolve1(value))
+        return (t, resolve1(value))
 
 #  split data into dictionary
 def split_data(field, d={}):
@@ -56,59 +68,15 @@ def load_data_from_pdf(pdf):
         doc = PDFDocument(parser)
         parser.set_document(doc)
         outcome = [load_fields_from_pdf(resolve1(f)) for f in resolve1(doc.catalog['AcroForm'])['Fields']]
+        # format the outcome of data extract from ics pdf
+        outcome = split_data(outcome)
+        if outcome['greater than 4 dynamic reader limit drl sets']:
+            outcome['greater than 4 dynamic reader limit drl sets'] = True if int(outcome['greater than 4 dynamic reader limit drl sets']) > 4 else False
+        if outcome['greater than 4 dynamic reader limit drl sets']:
+            outcome['greater than 4 dynamic reader limit drl sets'] = True if int(outcome['greater than 4 dynamic reader limit drl sets']) > 4 else False
+        for key in outcome:
+            outcome[key].replace('Off', False).replace('No', False).replace('Yes', True)
         return split_data(outcome)
-
-# multiple replace
-def multi_replace(str, arg1, arg2, *args):
-    str = str.replace(arg1, arg2)
-    for arg in args:
-        str = str.replace(arg, arg2)
-    return str
-
-
-#  get all non-repetitive [ICS Configuration] from checklist
-def define_ics_configuration():
-    list = []
-    try:
-        checklist = load_workbook('template_RGpath.xlsx')
-    except IOError as e:
-        raw_input(e)
-        exit()
-    for checklist_sheet in [checklist['MSD Path(Online Only)'], checklist['MSD Path(Online Capable)'], checklist['qVSDC Path']]:
-        for cell in checklist_sheet['B']:
-            condition = cell.value
-            # if format_parenthesis(condition) == False:
-            #     raw_input('Please modify the parenthesis in this row correctly:' + str(cell.row))
-            if condition is not None:
-                condition = condition.lower()
-                condition = multi_replace(condition, '\n', ' ', '  ')
-                condition = multi_replace(condition, '[', '', ']', '(', ')')
-                condition = condition.replace('disbaled', 'disabled')
-                condition = multi_replace(condition, ' disabled or not supported', ',', ' not supported', ' supported')
-                condition = condition.strip().strip(',').split(',')
-                # catch all configuration items
-                for str in condition:
-                    key = str.strip()
-                    if key not in list:
-                        list.append(key)
-                        print key,cell
-    checklist.close()
-
-#  fetch all [ICS Configuration] value from customer ics pdf document
-def get_ics_value():
-    dic = {}
-    try:
-        ics = load_workbook('template_RGpath.xlsx')
-    except IOError as e:
-        raw_input(e)
-        exit()
-    ics_sheet = ics['ICS_Configuration']
-    for cell in ics_sheet['A']:
-        if cell.value is None:
-            break
-        dic[cell.value.lower()] = True
-    return dic
-
 
 def readdata(ics_result):
     try:
@@ -130,9 +98,30 @@ def readdata(ics_result):
                 # translate conditions
                 for item in temp_sheet['A']:
                     if item.value and re.search(item.value, condition):
-                        if temp_sheet['B' + str(item.row)].value and re.search(r'.* and .*|.* or .*', temp_sheet['B' + str(item.row)].value):
-                            piece = temp_sheet['B' + str(item.row)].value.split(' and ')
-                            print piece
+                        if temp_sheet['B' + str(item.row)].value is None:
+                            verdict = True
+                        elif re.search(r'.* and .*', temp_sheet['B' + str(item.row)].value):
+                            verdict = ''
+                            pieces = temp_sheet['B' + str(item.row)].value.split(' and ')
+                            for p in pieces:
+                                verdict += ics_result[p]
+                                verdict += ' and '
+                            verdict = eval(verdict[:-5])
+                        elif re.search(r'.* or .*', temp_sheet['B' + str(item.row)].value):
+                            verdict = ''
+                            pieces = temp_sheet['B' + str(item.row)].value.split(' or ')
+                            for p in pieces:
+                                verdict += ics_result[p]
+                                verdict += ' or '
+                            verdict = eval(verdict[:-4])
+                        else:
+                            verdict = ics_result[temp_sheet['B' + str(item.row)].value]
+
+
+
+                        # and
+                        #     piece = temp_sheet['B' + str(item.row)].value.split(' and ')
+
 
 
 
@@ -149,16 +138,16 @@ def readdata(ics_result):
     #                     else:
     #                         condition = re.sub(item.value + r' (supported|not supported|present|not present or not active|disabled or not supported)', r'\g<0> and', condition)
     #                     if modifier == 'supported' or modifier == 'present':
-    #                         verdict = 'True' #
+    #                         verdict = str(verdict) #
     #                     elif modifier == 'not supported':
-    #                         verdict = 'False' #
+    #                         verdict = str(not verdict) #
     #                     elif modifier == 'not present or not active' or modifier == 'disabled or not supported':
     #                         condition = re.sub(item.value + r' (supported|not supported|present|not present or not active|disabled or not supported) (and|or)', '', condition)
     #                         continue
     #                     condition = re.sub(item.value + r' (supported|not supported|present|not present or not active|disabled or not supported)', verdict, condition)
     #
     #             condition = condition.strip()
-    #             condition = condition[0:-4]
+    #             condition = condition[:-4]
     #             condition = 'True' if not condition else eval(condition)
     #             subcondition_area = [sub.column for sub in path_sheet[condition_cell.row] if path_sheet[str(sub.column) + '2'].value == 'Y or N/A']
     #             result_area = [res.column for res in path_sheet[condition_cell.row] if path_sheet[str(res.column) + '2'].value == 'RESULT']
