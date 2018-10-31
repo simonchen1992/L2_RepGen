@@ -6,13 +6,19 @@ from pdfminer.pdfparser import PDFParser
 from pdfminer.pdfdocument import PDFDocument
 from pdfminer.pdftypes import resolve1
 from pdfminer.psparser import PSLiteral, literal_name
-style = PatternFill(fill_type='solid',fgColor=colors.RED)
 
+STYLE_RED = PatternFill(fill_type='solid',fgColor=colors.RED)
+LOGIC_TEXT = r' (and|or)'
+VERDICT_TEXT = r' (supported|not supported|present|not present or not active|disabled or not supported)'
 
-
-logic_texts = ['and', 'or']
-verdict_texts = ['supported', 'not supported', 'present', 'not present or not active', 'disabled or not supported']
-
+# connect to template excel
+def template_open():
+    global expectResult
+    try:
+        expectResult = load_workbook('template_RGpath.xlsx')
+    except IOError as e:
+        raw_input(e)
+        exit()
 
 # multiple replace
 def multi_replace(str, arg1, arg2, *args):
@@ -38,7 +44,6 @@ def load_fields_from_pdf(field, T=''):
     # if form and t:
     #     return [load_fields_from_pdf(resolve1(f), t) for f in form]
     # else:
-
     # Some field types, like signatures, need extra resolving
     value = resolve1(field.get('AS')) if resolve1(field.get('AS')) is not None else resolve1(field.get('V'))
     #  if output is PSLiteral type, transfer it into str type through "literal_name" function
@@ -68,27 +73,51 @@ def load_data_from_pdf(pdf):
         doc = PDFDocument(parser)
         parser.set_document(doc)
         outcome = [load_fields_from_pdf(resolve1(f)) for f in resolve1(doc.catalog['AcroForm'])['Fields']]
-        # format the outcome of data extract from ics pdf
-        outcome = split_data(outcome)
-        if outcome['greater than 4 dynamic reader limit drl sets']:
-            outcome['greater than 4 dynamic reader limit drl sets'] = True if int(outcome['greater than 4 dynamic reader limit drl sets']) > 4 else False
-        if outcome['greater than 4 dynamic reader limit drl sets']:
-            outcome['greater than 4 dynamic reader limit drl sets'] = True if int(outcome['greater than 4 dynamic reader limit drl sets']) > 4 else False
-        for key in outcome:
-            outcome[key].replace('Off', False).replace('No', False).replace('Yes', True)
-        return split_data(outcome)
+    # format the outcome of data extract from ics pdf
+    outcome = split_data(outcome)
+    if outcome['Max Dynamic Reader Limit sets supported']:
+        outcome['Max Dynamic Reader Limit sets supported'] = True if int(outcome['Max Dynamic Reader Limit sets supported']) > 4 else False
+    if outcome['Product Configuration']:
+        outcome['Product Configuration'] = True if outcome['Product Configuration'] == '(A) PCDA (IRWIN Reader) / S-ICR' else False
+    for key in outcome:
+        if outcome[key] == 'Yes':
+            outcome[key] = True
+        elif outcome[key] in ['Off', 'No']:
+            outcome[key] = False
+    return outcome
 
-def readdata(ics_result):
-    try:
-        checklist = load_workbook('template_RGpath.xlsx')
-    except IOError as e:
-        raw_input(e)
-        exit()
-    temp_sheet = checklist['Sheet1'] # list all possible configurtion
-    for path_sheet in [checklist['MSD Path(Online Only)'], checklist['MSD Path(Online Capable)'], checklist['qVSDC Path']]:
+# Generate results for sub-condition
+def ics_static_save(raw):
+    temp_sheet = expectResult['ICS_Config_Static'] # list all possible configurtion
+    for key in temp_sheet['B']:
+        if key.value is None:
+            verdict = 'True'
+        elif re.search(r'.* and .*', key.value):
+            verdict = ''
+            pieces = key.value.split(' and ')
+            for p in pieces:
+                verdict += str(raw[p])
+                verdict += ' and '
+            verdict = eval(verdict[:-5])
+        elif re.search(r'.* or .*', key.value):
+            verdict = ''
+            pieces = key.value.split(' or ')
+            for p in pieces:
+                verdict += str(raw[p])
+                verdict += ' or '
+            verdict = eval(verdict[:-4])
+        else:
+            verdict = raw[key.value] if key.value != "MSD Support" else (not raw[key.value])
+        if verdict is None:
+            raise Exception('There is blank to be filled at row %s. Please retry after fill it.'%key.row)
+        temp_sheet['C' + str(key.row)] = str(verdict)
+
+def gen_expect_result():
+    temp_sheet = expectResult['ICS_Config_Static'] # list all possible configurtion
+    for path_sheet in [expectResult['MSD Path(Online Only)'], expectResult['MSD Path(Online Capable)'], expectResult['qVSDC Path']]:
         for condition_cell in path_sheet['B']:
             condition = condition_cell.value  # get condition description from template
-            outcome = ''  # contain logic method and verdict calculation the final result
+            #outcome = ''  # contain logic method and verdict calculation the final result
             if condition not in [None, 'CONDITIONS ']:
                 # format conditions
                 condition = condition.lower()
@@ -98,108 +127,43 @@ def readdata(ics_result):
                 # translate conditions
                 for item in temp_sheet['A']:
                     if item.value and re.search(item.value, condition):
-                        if temp_sheet['B' + str(item.row)].value is None:
-                            verdict = True
-                        elif re.search(r'.* and .*', temp_sheet['B' + str(item.row)].value):
-                            verdict = ''
-                            pieces = temp_sheet['B' + str(item.row)].value.split(' and ')
-                            for p in pieces:
-                                verdict += ics_result[p]
-                                verdict += ' and '
-                            verdict = eval(verdict[:-5])
-                        elif re.search(r'.* or .*', temp_sheet['B' + str(item.row)].value):
-                            verdict = ''
-                            pieces = temp_sheet['B' + str(item.row)].value.split(' or ')
-                            for p in pieces:
-                                verdict += ics_result[p]
-                                verdict += ' or '
-                            verdict = eval(verdict[:-4])
+                        if re.search(item.value + VERDICT_TEXT, condition):
+                            modifier = re.search(item.value + VERDICT_TEXT, condition).group(0)
+                            modifier = modifier.replace(item.value, '').strip()
+                            pass
                         else:
-                            verdict = ics_result[temp_sheet['B' + str(item.row)].value]
-
-
-
-                        # and
-                        #     piece = temp_sheet['B' + str(item.row)].value.split(' and ')
-
-
-
-
-
-    #                     if re.search(item.value + r' (supported|not supported|present|not present or not active|disabled or not supported)', condition):
-    #                         modifier = re.search(item.value + r' (supported|not supported|present|not present or not active|disabled or not supported)', condition).group(0)
-    #                         modifier = modifier.replace(item.value, '').strip()
-    #                         pass
-    #                     else:
-    #                         condition = condition.replace(item.value, item.value + ' supported')
-    #                         modifier = 'supported'
-    #                     if re.search(item.value + r' (supported|not supported|present|not present or not active|disabled or not supported) (and|or)', condition):
-    #                         pass
-    #                     else:
-    #                         condition = re.sub(item.value + r' (supported|not supported|present|not present or not active|disabled or not supported)', r'\g<0> and', condition)
-    #                     if modifier == 'supported' or modifier == 'present':
-    #                         verdict = str(verdict) #
-    #                     elif modifier == 'not supported':
-    #                         verdict = str(not verdict) #
-    #                     elif modifier == 'not present or not active' or modifier == 'disabled or not supported':
-    #                         condition = re.sub(item.value + r' (supported|not supported|present|not present or not active|disabled or not supported) (and|or)', '', condition)
-    #                         continue
-    #                     condition = re.sub(item.value + r' (supported|not supported|present|not present or not active|disabled or not supported)', verdict, condition)
-    #
-    #             condition = condition.strip()
-    #             condition = condition[:-4]
-    #             condition = 'True' if not condition else eval(condition)
-    #             subcondition_area = [sub.column for sub in path_sheet[condition_cell.row] if path_sheet[str(sub.column) + '2'].value == 'Y or N/A']
-    #             result_area = [res.column for res in path_sheet[condition_cell.row] if path_sheet[str(res.column) + '2'].value == 'RESULT']
-    #             for index, subcondition in enumerate(subcondition_area):
-    #                 subcondition = True if path_sheet[subcondition + str(condition_cell.row)].value == 'Y' else False
-    #                 path_sheet[result_area[index] + str(condition_cell.row)].value = 'PASS' if subcondition and condition else 'N/A'
-    # checklist.save('checklist_output.xlsx')
-    # checklist.close()
-
-                        # condition = condition.replace(item.value.strip(), 'True')  # pending to add real result
-                        #
-                        # for verdict in verdict_texts:
-                        #     print re.match(verdict, condition.strip())
-                        #     print condition
-                        #     raw_input()
-
-                # if condition.strip():
-                #     print condition.strip(), cell
-
-                # divide = condition.replace('AND', ',').replace('OR', ',').replace('(', '').replace(')', '').lower()
-                # divide = divide.replace(' not supported', 'n ').replace(' supported', 'y ').split(',')
-                # divide = [item.strip() for item in divide]
-                # for piece in divide:
-                #     if piece[-1] == ']':
-                #         divide[divide.index(piece)] += 'y'
-                #         piece += 'y'
-                #     if piece[piece.find(']') + 1] not in ['y', 'n']:
-                #         addin = [p[-1] for p in divide[divide.index(piece):] if p[-2] in ['y', 'n']]
-                #         if cell.row == 1058:
-                #             print addin, piece
-                #         divide[divide.index(piece)] += addin
-                #         piece += addin
-                    # #  check if all end with y or n
-                    # if piece[-1] not in ['y', 'n']:
-                    #     raw_input(piece)
-    #                 for key in ics.keys():
-    #                     if piece[:(len(piece) -1)] == key:
-    #                         divide[divide.index(piece)] = ics[key] if piece[-1] == 'y' else not ics[key]
-    #             condition = condition.lower().replace(' not supported', '').replace(' supported', '')
-    #             for i in range(len(divide)):
-    #                 if condition.find('[') != -1:
-    #                     condition = condition.replace(condition[condition.find('['): condition.find(']') + 1], str(divide[i])) + '\n'
-    #             checklist_sheet['C' + str(cell.row)] = 'PASS' if eval(condition) == True else 'NA'
-    #         elif condition is not None and condition.strip() == 'NA':
-    #             checklist_sheet['C' + str(cell.row)] = 'PASS'
-    # checklist.save('checklist_output.xlsx')
-    # checklist.close()
-
+                            condition = condition.replace(item.value, item.value + ' supported')
+                            modifier = 'supported'
+                        if re.search(item.value + VERDICT_TEXT + LOGIC_TEXT, condition):
+                            pass
+                        else:
+                            condition = re.sub(item.value + VERDICT_TEXT, r'\g<0> and', condition)
+                        if modifier == 'supported' or modifier == 'present':
+                            verdict = temp_sheet['C' + str(item.row)].value
+                        elif modifier == 'not supported':
+                            verdict = True if temp_sheet['C' + str(item.row)].value == 'True' else False
+                            verdict = str(not verdict)
+                        elif modifier in ['not present or not active', 'disabled or not supported']:
+                            condition = re.sub(item.value + VERDICT_TEXT + LOGIC_TEXT, '', condition)
+                            continue
+                        condition = re.sub(item.value + VERDICT_TEXT, verdict, condition)
+                condition = condition.strip()
+                condition = condition[:-4]
+                condition = 'True' if not condition else eval(condition)
+                subcondition_area = [sub.column for sub in path_sheet[condition_cell.row] if path_sheet[str(sub.column) + '2'].value == 'Y or N/A']
+                result_area = [res.column for res in path_sheet[condition_cell.row] if path_sheet[str(res.column) + '2'].value == 'RESULT']
+                for index, subcondition in enumerate(subcondition_area):
+                    subcondition = True if path_sheet[subcondition + str(condition_cell.row)].value == 'Y' else False
+                    path_sheet[result_area[index] + str(condition_cell.row)].value = 'PASS' if subcondition and condition else 'N/A'
+    expectResult.save('expectResult.xlsx')
+    expectResult.close()
 
 
 #define_ics_configuration()
 #ics = get_ics_value()
 #readdata()
+template_open()
 ics = load_data_from_pdf('out1.pdf')
-readdata(ics)
+ics_static_save(ics)
+gen_expect_result()
+#readdata(ics)
