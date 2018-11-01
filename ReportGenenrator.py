@@ -1,5 +1,6 @@
 #  Working envrionment: Python 2.7
 import re
+from os import listdir,getcwd
 from openpyxl import load_workbook
 from openpyxl.styles import colors,PatternFill
 from pdfminer.pdfparser import PDFParser
@@ -13,9 +14,10 @@ VERDICT_TEXT = r' (supported|not supported|present|not present or not active|dis
 
 # connect to template excel
 def template_open():
-    global expectResult
+    global expectResult, realResult
     try:
         expectResult = load_workbook('template_RGpath.xlsx')
+        realResult = load_workbook('template_realResult.xlsx')
     except IOError as e:
         raw_input(e)
         exit()
@@ -119,51 +121,69 @@ def gen_expect_result():
             condition = condition_cell.value  # get condition description from template
             #outcome = ''  # contain logic method and verdict calculation the final result
             if condition not in [None, 'CONDITIONS ']:
-                # format conditions
-                condition = condition.lower()
-                condition = multi_replace(condition, '\n', ' ', '   ', '  ')    # remove line break and make sure there's only one blank between words
-                condition = multi_replace(condition, '[', '', ']', '(', ')')    # remove all parentheses
-                condition = condition.replace('disbaled', 'disabled')         # fix TYPOs
-                # translate conditions
-                for item in temp_sheet['A']:
-                    if item.value and re.search(item.value, condition):
-                        if re.search(item.value + VERDICT_TEXT, condition):
-                            modifier = re.search(item.value + VERDICT_TEXT, condition).group(0)
-                            modifier = modifier.replace(item.value, '').strip()
-                            pass
-                        else:
-                            condition = condition.replace(item.value, item.value + ' supported')
-                            modifier = 'supported'
-                        if re.search(item.value + VERDICT_TEXT + LOGIC_TEXT, condition):
-                            pass
-                        else:
-                            condition = re.sub(item.value + VERDICT_TEXT, r'\g<0> and', condition)
-                        if modifier == 'supported' or modifier == 'present':
-                            verdict = temp_sheet['C' + str(item.row)].value
-                        elif modifier == 'not supported':
-                            verdict = True if temp_sheet['C' + str(item.row)].value == 'True' else False
-                            verdict = str(not verdict)
-                        elif modifier in ['not present or not active', 'disabled or not supported']:
-                            condition = re.sub(item.value + VERDICT_TEXT + LOGIC_TEXT, '', condition)
-                            continue
-                        condition = re.sub(item.value + VERDICT_TEXT, verdict, condition)
-                condition = condition.strip()
-                condition = condition[:-4]
-                condition = 'True' if not condition else eval(condition)
+                if (temp_sheet['C2'].value == 'True' and path_sheet in [expectResult['MSD Path(Online Only)'], expectResult['MSD Path(Online Capable)']])\
+                        or (temp_sheet['C3'].value == 'True' and path_sheet == expectResult['MSD Path(Online Only)'])\
+                        or (temp_sheet['C4'].value == 'True' and path_sheet == expectResult['MSD Path(Online Capable)']):
+                    condition = False
+                else:
+                    # format conditions
+                    condition = condition.lower()
+                    condition = multi_replace(condition, '\n', ' ', '   ', '  ')    # remove line break and make sure there's only one blank between words
+                    condition = multi_replace(condition, '[', '', ']', '(', ')')    # remove all parentheses
+                    condition = condition.replace('disbaled', 'disabled')         # fix TYPOs
+                    # translate conditions
+                    for item in temp_sheet['A']:
+                        if item.value and re.search(item.value, condition):
+                            if re.search(item.value + VERDICT_TEXT, condition):
+                                modifier = re.search(item.value + VERDICT_TEXT, condition).group(0)
+                                modifier = modifier.replace(item.value, '').strip()
+                                pass
+                            else:
+                                condition = condition.replace(item.value, item.value + ' supported')
+                                modifier = 'supported'
+                            if re.search(item.value + VERDICT_TEXT + LOGIC_TEXT, condition):
+                                pass
+                            else:
+                                condition = re.sub(item.value + VERDICT_TEXT, r'\g<0> and', condition)
+                            if modifier == 'supported' or modifier == 'present':
+                                verdict = temp_sheet['C' + str(item.row)].value
+                            elif modifier == 'not supported':
+                                verdict = True if temp_sheet['C' + str(item.row)].value == 'True' else False
+                                verdict = str(not verdict)
+                            elif modifier in ['not present or not active', 'disabled or not supported']:
+                                condition = re.sub(item.value + VERDICT_TEXT + LOGIC_TEXT, '', condition)
+                                continue
+                            condition = re.sub(item.value + VERDICT_TEXT, verdict, condition)
+                    condition = condition.strip()
+                    condition = condition[:-4]
+                    condition = True if not condition else eval(condition)
                 subcondition_area = [sub.column for sub in path_sheet[condition_cell.row] if path_sheet[str(sub.column) + '2'].value == 'Y or N/A']
                 result_area = [res.column for res in path_sheet[condition_cell.row] if path_sheet[str(res.column) + '2'].value == 'RESULT']
                 for index, subcondition in enumerate(subcondition_area):
                     subcondition = True if path_sheet[subcondition + str(condition_cell.row)].value == 'Y' else False
+                    if path_sheet[subcondition_area[index] + '1'].value == 'qVSDC/MSD active mode' and temp_sheet['C31'].value == 'False':
+                        subcondition = False
                     path_sheet[result_area[index] + str(condition_cell.row)].value = 'PASS' if subcondition and condition else 'N/A'
     expectResult.save('expectResult.xlsx')
     expectResult.close()
 
+def gen_real_result():
+    titles = [t.value for t in realResult['Titles']['A']]  # list all possible titles
+    f = [f.value for f in realResult['Titles']['B']]
+    for path_sheet in [realResult['MSD Path(Online Only)'], realResult['MSD Path(Online Capable)'], realResult['qVSDC Path']]:
+        for title in path_sheet['1']:
+            if title.value in titles:
+                f_1 = [f[i] for i,v in enumerate(titles)]
+                raw_input(f_1)
 
-#define_ics_configuration()
-#ics = get_ics_value()
-#readdata()
+
+    # Filepath = getcwd()
+    # for Filename in listdir(Filepath):
+    #     Filename = re.sub(r'\.\w+', '', Filename)
+    #     print Filename
+
 template_open()
-ics = load_data_from_pdf('out1.pdf')
-ics_static_save(ics)
-gen_expect_result()
-#readdata(ics)
+# ics = load_data_from_pdf('out1.pdf')
+# ics_static_save(ics)
+# gen_expect_result()
+gen_real_result()
